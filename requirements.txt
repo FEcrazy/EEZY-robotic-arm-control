@@ -1,0 +1,2 @@
+micropython-pca9685>=1.0.0
+micropython-i2c>=0.1.0 
