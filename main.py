@@ -2,7 +2,17 @@ from pca9685 import PCA9685
 from machine import I2C, Pin
 from servo import Servos
 from gcode_interpreter import GCodeInterpreter
-from settings import AXIS_LIMITS, I2C_SDA_PIN, I2C_SCL_PIN, I2C_ID, HOME_POSITION, SETUP_DELAY, MOVEMENT_DELAY, HORIZONTAL_LINE
+from settings import (
+    AXIS_LIMITS, 
+    I2C_SDA_PIN, 
+    I2C_SCL_PIN, 
+    I2C_ID, 
+    HOME_POSITION, 
+    SETUP_DELAY, 
+    MOVEMENT_DELAY, 
+    HORIZONTAL_LINE,
+    DIAGONAL_LINE
+)
 import time
 import math
 
@@ -48,7 +58,7 @@ def calculate_compensation(z_angle, z_start, z_end):
 
 def wait_for_servos(gcode, target_positions, tolerance=0.5, timeout=5.0):
     """
-    Aguarda até que todos os servos atinjam suas posições alvo
+    Aguarda ate que todos os servos atinjam suas posicoes alvo
     """
     start_time = time.time()
     while True:
@@ -62,12 +72,12 @@ def wait_for_servos(gcode, target_positions, tolerance=0.5, timeout=5.0):
                 break
         
         if all_reached:
-            print(f"Posição atingida: {current_pos}")
+            print(f"Posicao atingida: {current_pos}")
             return True
             
         if time.time() - start_time > timeout:
-            print(f"Timeout! Posição atual: {current_pos}")
-            print(f"Posição alvo: {target_positions}")
+            print(f"Timeout! Posicao atual: {current_pos}")
+            print(f"Posicao alvo: {target_positions}")
             return False
             
         time.sleep(0.1)
@@ -81,12 +91,12 @@ def execute_horizontal_line():
     z_end = 155     
     step = HORIZONTAL_LINE['STEP_SIZE']
     
-    print(f"\nIniciando movimento de Z={z_start}° até Z={z_end}°")
+    print(f"\nIniciando movimento de Z={z_start}° ate Z={z_end}°")
     print(f"X vai variar entre {HORIZONTAL_LINE['X_RETRACTED']}° e {HORIZONTAL_LINE['X_EXTENDED']}°")
     print(f"Y vai variar entre {HORIZONTAL_LINE['Y_RETRACTED']}° e {HORIZONTAL_LINE['Y_EXTENDED']}°")
     
     # Move para posição inicial em sequência
-    print("\nIndo para posição inicial...")
+    print("\nIndo para posicao inicial...")
     
     # 1. Primeiro move Y para posição segura
     safe_y = HORIZONTAL_LINE['Y_RETRACTED']
@@ -113,7 +123,7 @@ def execute_horizontal_line():
     
     # Verifica posição inicial
     current_pos = gcode.get_position()
-    print("\nPosição inicial atingida:")
+    print("\nPosicao inicial atingida:")
     print(f"Y={current_pos['Y']}° X={current_pos['X']}° Z={current_pos['Z']}°")
     
     # Executa o movimento
@@ -145,8 +155,69 @@ def execute_horizontal_line():
         
         # Verifica posição atual
         current_pos = gcode.get_position()
-        print(f"Posição atual: Y={current_pos['Y']}° X={current_pos['X']}° Z={current_pos['Z']}°")
+        print(f"Posicao atual: Y={current_pos['Y']}° X={current_pos['X']}° Z={current_pos['Z']}°")
         
+        time.sleep(MOVEMENT_DELAY)
+    
+    return True
+
+def execute_diagonal_line(z_start, z_end):
+    """
+    Executa movimento diagonal:
+    - Y sobe linearmente do ponto mais baixo ao mais alto
+    - X mantem compensacao similar a linha horizontal
+    - Z move linearmente do fim ao inicio
+    """
+    step = DIAGONAL_LINE['STEP_SIZE']
+    
+    # Define pontos inicial e final de Y
+    y_start = DIAGONAL_LINE['Y_START']
+    y_end = DIAGONAL_LINE['Y_END']
+    
+    print(f"\nIniciando movimento diagonal:")
+    print(f"Z: {z_start} -> {z_end}")
+    print(f"Y: {y_start} -> {y_end}")
+    
+    # Calcula quantos passos teremos no total
+    total_steps = abs(z_end - z_start) // step
+    y_step = (y_end - y_start) / total_steps
+    
+    # Executa o movimento
+    print("\nExecutando movimento diagonal...")
+    current_y = y_start
+    
+    for z in range(z_start, z_end - step, -step):
+        # Calcula X usando a mesma logica da linha horizontal
+        x_pos = calculate_compensation(z, z_start, z_end)[0]  # Pega so X
+        
+        print(f"\nPasso atual: Z={z}")
+        print(f"X={x_pos:.1f}, Y={current_y:.1f}")
+        
+        # Move um eixo por vez para melhor controle
+        print("Movendo X...")
+        gcode.move_to({'X': x_pos})
+        if not wait_for_servos(gcode, {'X': x_pos}, timeout=5.0):
+            print("Erro ao mover X!")
+            return False
+            
+        print("Movendo Y...")
+        gcode.move_to({'Y': current_y})
+        if not wait_for_servos(gcode, {'Y': current_y}, timeout=5.0):
+            print("Erro ao mover Y!")
+            return False
+            
+        print("Movendo Z...")
+        gcode.move_to({'Z': z})
+        if not wait_for_servos(gcode, {'Z': z}, timeout=5.0):
+            print("Erro ao mover Z!")
+            return False
+        
+        # Verifica posicao atual
+        current_pos = gcode.get_position()
+        print(f"Posicao atual: Y={current_pos['Y']:.1f} X={current_pos['X']:.1f} Z={current_pos['Z']:.1f}")
+        
+        # Incrementa Y linearmente
+        current_y += y_step
         time.sleep(MOVEMENT_DELAY)
     
     return True
@@ -219,9 +290,20 @@ if __name__ == "__main__":
     print("\nPosição inicial OK! Aguardando início do movimento...")
     time.sleep(SETUP_DELAY)
 
-    # Continua com o resto do código...
+    # Executa movimento horizontal
     if execute_horizontal_line():
-        print("\nLinha horizontal concluída com sucesso!")
+        print("\nLinha horizontal concluida com sucesso!")
+        
+        # Pega posição atual de Z para iniciar movimento diagonal
+        current_pos = gcode.get_position()
+        z_atual = current_pos['Z']
+        
+        # Executa movimento diagonal
+        print("\nIniciando movimento diagonal...")
+        if execute_diagonal_line(z_atual, 35):  # 35 é o z_start original do movimento horizontal
+            print("\nLinha diagonal concluida com sucesso!")
+        else:
+            print("\nErro ao executar linha diagonal!")
     else:
         print("\nErro ao executar linha horizontal!")
 
@@ -234,4 +316,4 @@ if __name__ == "__main__":
     servo.release(1)  # Y
     servo.release(0)  # Z
 
-    print("\nSequência completa! Servos desligados.")
+    print("\nSequencia completa! Servos desligados.")
