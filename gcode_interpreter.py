@@ -1,112 +1,91 @@
-"""
-Interpretador de Comandos G-code
--------------------------------
-Implementa um interpretador básico de G-code para controle do braço robótico.
-
-Comandos Suportados:
-    G0: Movimento rápido
-    G1: Movimento controlado
-    G28: Retorno à posição inicial
-    M114: Consulta de posição
-
-Autor: [Felipe Delduque Guerche]
-"""
+from servo import Servos
+import time
+from settings import *
+import math
 
 class GCodeInterpreter:
-    """
-    Interpretador de comandos G-code para braço robótico.
+    def __init__(self, servo):
+        self.servo = servo
+        self.axis_limits = AXIS_LIMITS
+        self.current_position = HOME_POSITION.copy()
+        self.current_speed = VELOCITY  # Usa velocidade do settings.py
+        
+        # Não move os servos na inicialização
+        # Aguarda o setup() ser chamado explicitamente
     
-    Responsável por:
-        - Parsing de comandos G-code
-        - Execução de movimentos
-        - Controle de velocidade
-        - Relatório de posição
-    """
+    def setup(self):
+        """Inicialização segura - deve ser chamada após criar a instância"""
+        print("Iniciando setup do braço robótico...")
+        
+        # Move diretamente para home usando a velocidade configurada
+        self.home()
+        time.sleep(SETUP_DELAY)
+        print("Setup completo!")
 
-    def __init__(self, robot_arm):
-        """
-        Inicializa o interpretador.
-        
-        Args:
-            robot_arm: Instância de RoboticArm para controle
-        """
-        self.arm = robot_arm
-        self.supported_commands = {
-            'G0': self.rapid_move,
-            'G1': self.controlled_move,
-            'G28': self.home,
-            'M114': self.get_position
+    def _map_axis_to_servo(self, axis):
+        """Mapeia eixo para índice do servo"""
+        mapping = {
+            'X': 2,  # X (comprimento) agora usa servo 2
+            'Y': 1,  # Y (altura) continua no servo 1
+            'Z': 0   # Z (base) agora usa servo 0
         }
-    
-    def parse_coordinate(self, coord_str):
-        """Converte string de coordenada para valor numérico"""
-        return float(coord_str[1:])
-    
-    def rapid_move(self, params):
-        """G0: Movimento rápido"""
-        try:
-            if 'B' in params:  # Base
-                self.arm.move_base(self.parse_coordinate(params['B']))
-            if 'H' in params and 'E' in params:  # Altura e Extensão
-                self.arm.move_coordinated(
-                    self.parse_coordinate(params['H']),
-                    self.parse_coordinate(params['E'])
-                )
-            elif 'H' in params:  # Apenas altura
-                self.arm.move_height(self.parse_coordinate(params['H']))
-            elif 'E' in params:  # Apenas extensão
-                self.arm.move_extend(self.parse_coordinate(params['E']))
-        except ValueError as e:
-            print(f"Erro de movimento: {e}")
-    
-    def controlled_move(self, params):
-        """G1: Movimento controlado"""
-        # Define velocidade reduzida para movimento controlado
-        velocidade_original = self.arm.current_speed
-        self.arm.set_speed(45)  # Metade da velocidade
-        self.rapid_move(params)
-        self.arm.set_speed(velocidade_original)
-    
-    def home(self, params):
-        """G28: Home position"""
-        self.arm.home_position()
-    
-    def get_position(self, params):
-        """M114: Get current position"""
-        return {
-            'B': self.arm.current_base,
-            'H': self.arm.current_height,
-            'E': self.arm.current_extend
-        }
-    
-    def execute(self, command: str) -> dict:
-        """
-        Executa um comando G-code.
-        
-        Args:
-            command: String contendo o comando G-code
-            
-        Returns:
-            Dicionário com resultado da operação (para M114)
-            
-        Raises:
-            ValueError: Se o comando for inválido
-        """
-        # Parse command
-        parts = command.split()
+        return mapping.get(axis, None)
+
+    def _validate_position(self, axis, value):
+        """Valida se a posição está dentro dos limites"""
+        limits = self.axis_limits[axis]
+        if value < limits['min'] or value > limits['max']:
+            raise ValueError(f"Posição {value} fora dos limites para eixo {axis} ({limits['min']}-{limits['max']})")
+        return value
+
+    def parse_command(self, command):
+        """Interpreta e executa comandos G-code"""
+        parts = command.upper().split()
         if not parts:
             return
+        
+        if parts[0] in ['G0', 'G1']:
+            positions = {}
+            for part in parts[1:]:
+                if part[0] in ['X', 'Y', 'Z']:
+                    axis = part[0]
+                    value = float(part[1:])
+                    positions[axis] = self._validate_position(axis, value)
+                # Removido o processamento do F (velocidade) para manter consistência
             
-        cmd = parts[0]
-        params = {}
+            self.move_to(positions)
+            
+        elif parts[0] == 'G28':
+            self.home()
+            
+        elif parts[0] == 'M114':
+            return self.get_position()
+
+    def move_to(self, positions):
+        """Move todos os servos simultaneamente para as posições especificadas"""
+        servo_positions = {}
+        for axis, target in positions.items():
+            servo_index = self._map_axis_to_servo(axis)
+            if servo_index is not None:
+                servo_positions[servo_index] = target
         
-        # Parse parameters
-        for part in parts[1:]:
-            if part[0] in ['B', 'H', 'E']:
-                params[part[0]] = part
+        # Move todos os servos de uma vez
+        self.servo.position_all(servo_positions)
         
-        # Execute command
-        if cmd in self.supported_commands:
-            return self.supported_commands[cmd](params)
-        else:
-            print(f"Unsupported command: {cmd}") 
+        # Atualiza as posições atuais
+        self.current_position.update(positions)
+
+    def home(self):
+        """Move todos os eixos para a posição inicial com velocidade controlada"""
+        self.move_to(HOME_POSITION)
+
+    def get_position(self):
+        """
+        Retorna a posição atual dos servos.
+        """
+        # Supondo que a classe Servos tenha um método para obter a posição
+        return {
+            'X': self.servo.get_position(2),  # Servo 2 para X
+            'Y': self.servo.get_position(1),  # Servo 1 para Y
+            'Z': self.servo.get_position(0)   # Servo 0 para Z
+        }
